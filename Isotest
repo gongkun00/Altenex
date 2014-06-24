@@ -1,0 +1,90 @@
+#!/usr/bin/python
+#isotests.py
+# tests the isos for various data errors
+
+import psycopg2
+from contextlib import contextmanager
+import numpy as np
+
+class FishyInputs(Exception):
+    '''psycopg2 inputs will probably need to be mogrified to allow inputting a table name. Each time inputs are accepted into these functions, they'll need to be tested against hard-coded acceptable values. If they fail these tests, raise this error.
+       '''
+    def __init__(self, value):
+        self.value = value
+    def __str__(self):
+        return repr(self.value)
+
+class NoDBContext(Exception):
+    def __init__(self, value):
+        self.value = value
+    def __str__(self):
+        return repr(self.value)
+
+@contextmanager
+def pgopen(addr_str):
+    conn = psycopg2.connect(addr_str)
+    cur = conn.cursor()
+    yield cur
+    cur.close()
+    conn.close()
+
+def _validate_market(market):
+    '''make sure the market is valid'''
+    markets = ['MISO', 'PJM', 'ERCOT', 'CAISO', 'SPP', 'ISO-NE','ISONE', 'NEISO', 'NE-ISO', 'NYISO']
+    if market.upper() not in markets:
+        raise FishyInputs('The market provided is not valid!')
+
+def _validate_dtype(mytype):
+    '''make sure the datatype is valid'''
+    dtypes = ['RT', 'DA', 'RTLIP', 'DALIP', 'LOAD']
+    if mytype.upper() not in dtypes:
+        raise FishyInputs('The datatype provided is not valid!')
+
+def _validate_year(myyear):
+    '''make sure that the year provided is valid'''
+    yrs = range(2000, 2100)
+    if int(myyear) not in yrs:
+        raise FishyInputs('The year provided is not an actual year!')
+
+
+# test 1: test for entire missing time segments
+def GetTblName(market, dtype, year):
+    """gets the market/yr combination, stashes as the table name, and runs a query to look for any missing time segments (ie entire missing hours)
+       """
+    _validate_market(market)
+    _validate_dtype(dtype)
+    _validate_year(year)
+    return  market + '_' + dtype + '_' + str(year)
+
+def ValidateName(Name):
+    with pgopen("host='portal.altenex.com' dbname='altenexdb' user='altenex' password='7libertysquare'")as vad:
+        vad.execute("SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' and table_name= %s LIMIT 1", (Name,))
+        B=vad.fetchall()
+        if not B:
+            return False
+        else: return True
+
+
+def GetMissingTime(Name,Year):
+    with pgopen("host='portal.altenex.com' dbname='altenexdb' user='altenex' password='7libertysquare'")as cur:
+        timestart=str(Year)+'-1-1 00:00'
+        timeend=str(Year)+'-12-31 23:00'
+        cur.execute("SELECT generate_series('%s' :: timestamp, '%s' ,'1 hour') as s EXCEPT SELECT DISTINCT(dt) FROM %s ORDER BY s" %(timestart,timeend,Name))
+        return np.append(np.array(Name),np.array(cur.fetchall()))
+
+def FindMisLoopTY(market):
+    MissingTime=np.array([])
+    for year in range(2000,2014):
+        for dtype in ['rt', 'da', 'rtlip', 'dalip', 'load']:
+            A=GetTblName(market, dtype, year)
+            if ValidateName(A)== False: continue
+            else:MissingTime=np.append(MissingTime,GetMissingTime(A,year))
+    return MissingTime
+   
+if __name__=="__main__":
+    Missing=np.array([])
+    for market in ['miso', 'pjm', 'ercot', 'caiso', 'spp', 'iso-ne','isone', 'neiso', 'ne-iso', 'nyiso']:
+        Missing=np.append(Missing,FindMisLoopTY(market))
+    print(Missing)
+        
+
